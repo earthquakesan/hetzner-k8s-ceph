@@ -1,0 +1,20 @@
+---
+- hosts: localhost
+  connection: local
+  vars:
+    hetzner_api_token: "{{ lookup('env','HETZNER_API_TOKEN') }}"
+  tasks:
+    - name: create hetzner machine
+      hcloud_server:
+        name: "{{ item }}"
+        server_type: "cx21"
+        image: "debian-10"
+        datacenter: "fsn1-dc14" # falkenstein
+        api_token: "{{ hetzner_api_token }}"
+        ssh_keys:
+          - "devops"
+        state: present
+      loop:
+        - k8s-1
+        - k8s-2
+        - k8s-3

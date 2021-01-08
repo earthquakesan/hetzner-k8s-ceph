@@ -1,0 +1,56 @@
+---
+- hosts: all
+  vars:
+    ansible_user: root
+    server_timezone: "Europe/Berlin"
+    required_packages:
+    # Required by docker
+    - apt-transport-https
+    - ca-certificates
+    - curl
+    - gnupg-agent
+    - software-properties-common
+    # For time synchronization
+    - ntp
+    # Command line tools for debugging
+    - htop
+    - iotop
+    - vim
+    # Optional tools
+    #- zip
+    #- unzip
+    #- zsh
+    #- git
+    #- make
+    #- rsync
+    docker_packages:
+    - docker-ce
+    - docker-ce-cli
+    - containerd.io
+  tasks:
+  - name: apt-get update
+    apt:
+      update_cache: yes
+  - debug: var=required_packages
+  - name: install necessary packages {{ required_packages }}
+    apt:
+      name: "{{ item }}"
+    loop: "{{ required_packages }}" 
+  - name: set timezone to {{ server_timezone }}
+    community.general.timezone:
+      name: "{{ server_timezone }}"
+  - name: Add an apt key for docker-ce (debian)
+    apt_key:
+      url: https://download.docker.com/linux/debian/gpg
+      state: present
+  - name: get release name
+    command: lsb_release -cs
+    register: release_name
+  - name: add docker repository to apt (debian)
+    apt_repository:
+      repo: "deb [arch=amd64] https://download.docker.com/linux/debian {{ release_name.stdout }} stable"
+      state: present
+  - name: install docker packages
+    apt:
+      name: "{{ item }}"
+    loop: "{{ docker_packages }}"
