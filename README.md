@@ -8,7 +8,11 @@ This repository shows how to deploy k8s cluster using [rancher rke](https://ranc
   - [Getting started](#getting-started)
   - [Provision the Virtual Machines](#provision-the-virtual-machines)
   - [Install Kubernetes Cluster](#install-kubernetes-cluster)
-  - [Configurating DNS and Cert Manager for the Kubernetes Cluster](#configurating-dns-and-cert-manager-for-the-kubernetes-cluster)
+  - [Configurating DNS for the Kubernetes Cluster](#configurating-dns-for-the-kubernetes-cluster)
+  - [Configuring Cert Manager for the Kubernetes Cluster](#configuring-cert-manager-for-the-kubernetes-cluster)
+  - [Configuring Rancher UI for the Kubernetes Cluster](#configuring-rancher-ui-for-the-kubernetes-cluster)
+  - [Troubleshooting Common Problems](#troubleshooting-common-problems)
+    - [Namespace is stuck in Terminating State](#namespace-is-stuck-in-terminating-state)
 
 ## Necessary Tools
 
@@ -186,7 +190,7 @@ k get po -o wide
 k delete po busybox1
 ```
 
-## Configurating DNS and Cert Manager for the Kubernetes Cluster
+## Configurating DNS for the Kubernetes Cluster
 
 Setup a wildcard A entry for all three IP addresses of the k8s cluster in your DNS provider:
 
@@ -194,23 +198,143 @@ Setup a wildcard A entry for all three IP addresses of the k8s cluster in your D
 for i in {1..3}; do bash -c "ansible-inventory --list | jq '._meta.hostvars' | jq '.[\"k8s-$i\"].ipv4' | tr -d '\"'" ; done
 ```
 
-Install cert-manager:
+For example, I have the following DNS entries:
 
 ```
-kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v1.1.0/cert-manager.yaml
+*.k8s A 159.69.189.138 3600
+k8s A 159.69.189.138 3600
+```
 
-# wait until deployment is done
+## Configuring Cert Manager for the Kubernetes Cluster
+
+TODO: I am here, cert-manager was not working for 1.1.1
+
+Note: cert-manager v1.x.x does not install webhooks properly.
+
+Installing cert-manager:
+
+```
+SERVER=k8s.ermilov.org
+
+# Install the CustomResourceDefinition resources separately
+kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v0.15.0/cert-manager.crds.yaml
+
+# Create the namespace for cert-manager
+kubectl create namespace cert-manager
+
+# Add the Jetstack Helm repository
+helm repo add jetstack https://charts.jetstack.io
+
+# Update your local Helm chart repository cache
+helm repo update
+
+# Install the cert-manager Helm chart
+helm install \
+  cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --version v0.15.0
+
 kubectl -n cert-manager rollout status deploy/cert-manager
+```
+
+Test cert-manager installation:
+
+```
+cat <<EOF > test-resources.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager-test
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: test-selfsigned
+  namespace: cert-manager-test
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: selfsigned-cert
+  namespace: cert-manager-test
+spec:
+  dnsNames:
+    - example.com
+  secretName: selfsigned-cert-tls
+  issuerRef:
+    name: test-selfsigned
+EOF
+```
+
+Install CA certificates inside the cluster:
+
+```
+export EMAIL=youremailaddress@example.com
+export DOMAIN=your.domain.com
+export SERVER=k8s.${DOMAIN}
+
+mkdir tls
+
+cat <<EOF > tls/openssl.cnf
+[ req ]
+#default_bits           = 2048
+#default_md             = sha256
+#default_keyfile        = privkey.pem
+distinguished_name      = req_distinguished_name
+attributes              = req_attributes
+
+[ req_distinguished_name ]
+countryName                     = DE
+countryName_min                 = 2
+countryName_max                 = 2
+stateOrProvinceName             = Sachsen
+localityName                    = Leipzig
+0.organizationName              = Ermilov Org
+organizationalUnitName          = DevOps
+commonName                      = k8s.ermilov.org
+commonName_max                  = 64
+emailAddress                    = ${EMAIL}
+emailAddress_max                = 64
+
+[ req_attributes ]
+challengePassword               = A challenge password
+challengePassword_min           = 4
+challengePassword_max           = 20
+
+[ v3_ca ]
+basicConstraints = critical,CA:TRUE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer:always
+EOF
+
+openssl genrsa -out tls/ca.key 2048
+openssl req -x509 -new -nodes -key tls/ca.key -subj "/CN=${SERVER}" -days 3650 -out tls/ca.crt -extensions v3_ca -config tls/openssl.cnf
+
+kubectl create secret tls ca-keypair --cert=tls/ca.crt --key=tls/ca.key --namespace=cert-manager
+```
+
+Install ca issuer for the cluster:
+
+```
+cat <<EOF | k apply -f -
+apiVersion: cert-manager.io/v1alpha2
+kind: ClusterIssuer
+metadata:
+  name: ca-issuer
+spec:
+  ca:
+    secretName: ca-keypair
+EOF
 ```
 
 Install letsencrypt issuers for staging and prod:
 
 ```
-export EMAIL=youremailaddress@example.com
-
 cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1alpha2
-kind: Issuer
+kind: ClusterIssuer
 metadata:
   name: letsencrypt-prod
 spec:
@@ -224,8 +348,8 @@ spec:
         ingress:
           class: nginx
 ---
-apiVersion: cert-manager.io/v1
-kind: Issuer
+apiVersion: cert-manager.io/v1alpha2
+kind: ClusterIssuer
 metadata:
   name: letsencrypt-staging
 spec:
@@ -239,4 +363,27 @@ spec:
         ingress:
           class: nginx
 EOF
+```
+
+## Configuring Rancher UI for the Kubernetes Cluster
+
+The official installation documentation is located [here](https://rancher.com/docs/rancher/v2.x/en/installation/install-rancher-on-k8s/).
+
+```
+helm repo add rancher-latest https://releases.rancher.com/server-charts/latest
+kubectl create namespace cattle-system
+```
+
+## Troubleshooting Common Problems
+
+### Namespace is stuck in Terminating State
+
+In case you can not remove a namespace, you can try to reset its' finalizers:
+
+```
+k proxy
+export NAMESPACE=cert-manager
+kubectl get ns ${NAMESPACE} -o json | \
+  jq '.spec.finalizers=[]' | \
+  curl -X PUT http://localhost:8001/api/v1/namespaces/${NAMESPACE}/finalize -H "Content-Type: application/json" --data @-
 ```
