@@ -7,9 +7,9 @@
     - name: create hetzner machine
       hcloud_server:
         name: "{{ item }}"
-        server_type: "cx21"
+        server_type: "cx31"
         image: "debian-10"
-        datacenter: "fsn1-dc14" # falkenstein
+        datacenter: "nbg1-dc3"
         api_token: "{{ hetzner_api_token }}"
         ssh_keys:
           - "devops"

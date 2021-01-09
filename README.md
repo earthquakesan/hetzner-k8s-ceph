@@ -207,17 +207,17 @@ k8s A 159.69.189.138 3600
 
 ## Configuring Cert Manager for the Kubernetes Cluster
 
-TODO: I am here, cert-manager was not working for 1.1.1
-
-Note: cert-manager v1.x.x does not install webhooks properly.
+Note: cert-manager v1.x.x on rke kubernetes cluster (k8s v1.17.14) does not install webhooks properly. That's the reason why we are installing v0.16.1 in this section. For the latest k8s v1.19.x, you can install the latest version of the cert-manager (v1.x.x).
 
 Installing cert-manager:
 
 ```
-SERVER=k8s.ermilov.org
+export KUBECONFIG=kube_config_cluster.yml
+# check that you are on the right cluster
+k get no
 
 # Install the CustomResourceDefinition resources separately
-kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v0.15.0/cert-manager.crds.yaml
+kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v0.16.1/cert-manager.crds.yaml
 
 # Create the namespace for cert-manager
 kubectl create namespace cert-manager
@@ -232,12 +232,12 @@ helm repo update
 helm install \
   cert-manager jetstack/cert-manager \
   --namespace cert-manager \
-  --version v0.15.0
+  --version v0.16.1
 
 kubectl -n cert-manager rollout status deploy/cert-manager
 ```
 
-Test cert-manager installation:
+Validate cert-manager installation:
 
 ```
 cat <<EOF > test-resources.yaml
@@ -246,7 +246,7 @@ kind: Namespace
 metadata:
   name: cert-manager-test
 ---
-apiVersion: cert-manager.io/v1
+apiVersion: cert-manager.io/v1alpha2
 kind: Issuer
 metadata:
   name: test-selfsigned
@@ -254,7 +254,7 @@ metadata:
 spec:
   selfSigned: {}
 ---
-apiVersion: cert-manager.io/v1
+apiVersion: cert-manager.io/v1alpha2
 kind: Certificate
 metadata:
   name: selfsigned-cert
@@ -266,67 +266,9 @@ spec:
   issuerRef:
     name: test-selfsigned
 EOF
-```
 
-Install CA certificates inside the cluster:
-
-```
-export EMAIL=youremailaddress@example.com
-export DOMAIN=your.domain.com
-export SERVER=k8s.${DOMAIN}
-
-mkdir tls
-
-cat <<EOF > tls/openssl.cnf
-[ req ]
-#default_bits           = 2048
-#default_md             = sha256
-#default_keyfile        = privkey.pem
-distinguished_name      = req_distinguished_name
-attributes              = req_attributes
-
-[ req_distinguished_name ]
-countryName                     = DE
-countryName_min                 = 2
-countryName_max                 = 2
-stateOrProvinceName             = Sachsen
-localityName                    = Leipzig
-0.organizationName              = Ermilov Org
-organizationalUnitName          = DevOps
-commonName                      = k8s.ermilov.org
-commonName_max                  = 64
-emailAddress                    = ${EMAIL}
-emailAddress_max                = 64
-
-[ req_attributes ]
-challengePassword               = A challenge password
-challengePassword_min           = 4
-challengePassword_max           = 20
-
-[ v3_ca ]
-basicConstraints = critical,CA:TRUE
-subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid:always,issuer:always
-EOF
-
-openssl genrsa -out tls/ca.key 2048
-openssl req -x509 -new -nodes -key tls/ca.key -subj "/CN=${SERVER}" -days 3650 -out tls/ca.crt -extensions v3_ca -config tls/openssl.cnf
-
-kubectl create secret tls ca-keypair --cert=tls/ca.crt --key=tls/ca.key --namespace=cert-manager
-```
-
-Install ca issuer for the cluster:
-
-```
-cat <<EOF | k apply -f -
-apiVersion: cert-manager.io/v1alpha2
-kind: ClusterIssuer
-metadata:
-  name: ca-issuer
-spec:
-  ca:
-    secretName: ca-keypair
-EOF
+k apply -f test-resources.yaml
+k delete -f test-resources.yaml
 ```
 
 Install letsencrypt issuers for staging and prod:
@@ -365,6 +307,135 @@ spec:
 EOF
 ```
 
+Test letsencrypt certificates:
+
+TODO: certificates are not getting issued from the cluster-issuer, but from the default k8s build-in CA for some reason.
+
+```
+cat <<EOF > cert-manager-test.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        resources:
+          requests:
+            cpu: 10m
+            memory: 10Mi
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  ports:
+  - port: 80
+  selector:
+    app: nginx
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: nginx-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+spec:
+  tls:
+  - hosts:
+    - test.${SERVER}
+    secretName: nginx-tls
+  rules:
+  - host: test.${SERVER}
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: nginx
+          servicePort: 80
+EOF
+
+k apply -f cert-manager-test.yml
+k delete -f cert-manager-test.yml
+```
+
+Install CA certificates inside the cluster:
+
+```
+export EMAIL=youremailaddress@example.com
+export DOMAIN=your.domain.com
+export SERVER=k8s.${DOMAIN}
+
+mkdir tls
+
+cat <<EOF > tls/openssl.cnf
+[ req ]
+#default_bits           = 2048
+#default_md             = sha256
+#default_keyfile        = privkey.pem
+distinguished_name      = req_distinguished_name
+attributes              = req_attributes
+
+[ req_distinguished_name ]
+countryName                     = DE
+countryName_min                 = 2
+countryName_max                 = 2
+stateOrProvinceName             = Sachsen
+localityName                    = Leipzig
+0.organizationName              = Ermilov Org
+organizationalUnitName          = DevOps
+commonName                      = ${SERVER}
+commonName_max                  = 64
+emailAddress                    = ${EMAIL}
+emailAddress_max                = 64
+
+[ req_attributes ]
+challengePassword               = A challenge password
+challengePassword_min           = 4
+challengePassword_max           = 20
+
+[ v3_ca ]
+basicConstraints = critical,CA:TRUE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer:always
+EOF
+
+openssl genrsa -out tls/ca.key 2048
+openssl req -x509 -new -nodes -key tls/ca.key -subj "/CN=${SERVER}" -days 3650 -out tls/ca.crt -extensions v3_ca -config tls/openssl.cnf
+
+kubectl create secret tls ca-keypair --cert=tls/ca.crt --key=tls/ca.key --namespace=cert-manager
+```
+
+Install ca issuer for the cluster:
+
+```
+cat <<EOF | k apply -f -
+apiVersion: cert-manager.io/v1alpha2
+kind: ClusterIssuer
+metadata:
+  name: ca-issuer
+spec:
+  ca:
+    secretName: ca-keypair
+EOF
+```
+
+
 ## Configuring Rancher UI for the Kubernetes Cluster
 
 The official installation documentation is located [here](https://rancher.com/docs/rancher/v2.x/en/installation/install-rancher-on-k8s/).
@@ -372,6 +443,19 @@ The official installation documentation is located [here](https://rancher.com/do
 ```
 helm repo add rancher-latest https://releases.rancher.com/server-charts/latest
 kubectl create namespace cattle-system
+
+export EMAIL=youremailaddress@example.com
+export DOMAIN=your.domain.com
+export SERVER=k8s.${DOMAIN}
+
+helm install rancher rancher-latest/rancher \
+  --namespace cattle-system \
+  --set hostname=${SERVER} \
+  --set ingress.tls.source=letsEncrypt \
+  --set letsEncrypt.email=${EMAIL}
+
+# wait until deployment is rolled out
+kubectl -n cattle-system rollout status deploy/rancher
 ```
 
 ## Troubleshooting Common Problems
