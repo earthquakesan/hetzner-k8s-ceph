@@ -24,7 +24,8 @@
     #- make
     #- rsync
     docker_packages:
-    - docker-ce
+    # latest 20.03 is not supported for kubespray or rke
+    - docker-ce=5:19.03.14~3-0~debian-buster
     - docker-ce-cli
     - containerd.io
   tasks:

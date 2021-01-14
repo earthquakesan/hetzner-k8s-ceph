@@ -13,3 +13,15 @@
         - k8s-1
         - k8s-2
         - k8s-3
+    - pause: 
+        seconds: 10
+    - name: destroy hetzner volume
+      hcloud_volume:
+        api_token: "{{ hetzner_api_token }}"
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - k8s-1
+        - k8s-2
+        - k8s-3
+

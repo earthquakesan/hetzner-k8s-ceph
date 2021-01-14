@@ -1,0 +1,23 @@
+---
+- name: create hetzner volume
+  hcloud_volume:
+    api_token: "{{ hetzner_api_token }}"
+    location: "nbg1"
+    name: "{{ item }}"
+    size: 10
+    format: ext4
+    automount: no
+    state: present
+  register: volume_info
+- name: create hetzner machine
+  hcloud_server:
+    name: "{{ item }}"
+    server_type: "cx31"
+    image: "debian-10"
+    datacenter: "nbg1-dc3"
+    api_token: "{{ hetzner_api_token }}"
+    ssh_keys:
+      - "devops"
+    state: present
+    volumes:
+      - "{{ volume_info.hcloud_volume.id }}"
